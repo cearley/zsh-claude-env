@@ -134,12 +134,24 @@ add-zsh-hook preexec _claude_env_preexec
 # baseline for CLAUDE_ENV_SHOW_DEFAULT. Must happen before anything below
 # switches CLAUDE_CONFIG_DIR (it doesn't), and after _claude_env_name is
 # defined (it is).
+#
+# Wrapped in an anonymous function so `local REPLY` always has a real
+# function scope to bind to. This file's top level isn't itself inside a
+# function when sourced directly (the standalone install path in the
+# README) — only oh-my-zsh's own loader happens to source plugins from
+# inside a function. Without this wrapper, a second `source` of this file
+# in the same shell (e.g. an ordinary `source ~/.zshrc`) would hit zsh's
+# `local`-outside-a-function fallback to plain `typeset`, which prints
+# `REPLY=<value>` to the terminal for an already-set variable instead of
+# scoping it.
 # ------------------------------------------------------------------------
 typeset -g _claude_env_baseline_label=""
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then
-  local REPLY
-  _claude_env_name
-  _claude_env_baseline_label="$REPLY"
+  () {
+    local REPLY
+    _claude_env_name
+    _claude_env_baseline_label="$REPLY"
+  }
 fi
 
 # ------------------------------------------------------------------------
