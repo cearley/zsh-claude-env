@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Summary: Print shell code to get or set the shell-session profile
+#
+# Usage: ccenv sh-shell
+#        ccenv sh-shell <name>
+#        ccenv sh-shell --unset
+#
+# This is the eval-target half of `ccenv shell` (see libexec/ccenv-init's
+# `ccenv()` wrapper function): it never touches the calling shell's
+# environment directly — it only prints shell code to stdout, for the
+# wrapper function to `eval` in the live shell.
+#
+# `ccenv sh-shell <name>` prints `export CCENV_PROFILE="<name>"`, then
+# re-invokes the same `ccenv sh-resolve` call `_ccenv_hook` uses (the
+# one place that decides what CLAUDE_CONFIG_DIR should become and
+# whether it's safe to unset something ccenv doesn't own), then a call
+# to `claude_env_after_switch` (if defined) — but only for a registered
+# <name>; otherwise it errors to stderr and exits non-zero, printing
+# nothing eval-able. Re-invoking sh-resolve rather than duplicating its
+# logic here is deliberate: two independent copies previously drifted
+# (one unset CLAUDE_CONFIG_DIR unconditionally) — there is now exactly
+# one place that ever decides it.
+#
+# `--unset` prints `unset CCENV_PROFILE` plus the same re-invocation and
+# after-switch call. With no argument, it echoes CCENV_PROFILE back (or
+# errors if unset).
+#
+# A SET or --unset here only takes effect in a shell that eval's this
+# script's output. If CCENV_LOADED is absent, that means nothing is
+# about to eval it, so this warns directly on its own stderr before
+# still printing the usual eval-target code — if the caller eval's it
+# by hand anyway, the set still works. The no-argument GET path never
+# warns.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+name="$1"
+
+if [ -z "$name" ]; then
+  if [ -n "$CCENV_PROFILE" ]; then
+    echo "echo \"\$CCENV_PROFILE\""
+    exit 0
+  fi
+  echo 'echo "ccenv: no shell-specific profile configured" >&2'
+  exit 1
+fi
+
+if [ -z "$CCENV_LOADED" ]; then
+  echo 'ccenv: warning: shell integration not active — run eval "$(ccenv init -)" first' >&2
+fi
+
+# Printed as literal text -- not a bare `_ccenv_hook` call -- so this
+# still works even if the caller eval's this script's output by hand
+# without ever having run `ccenv init -`: `_ccenv_hook` might not be
+# defined in that shell, but `ccenv sh-resolve` always is reachable.
+_ccenv_print_resolve_call() {
+  echo 'eval "$(command ccenv sh-resolve)"'
+}
+
+# Portable (bash and zsh both support `type` for this) check for
+# whether the caller's shell has claude_env_after_switch defined --
+# printed as part of the eval'd output, not run here, since it must run
+# in the CALLING shell, not this subprocess.
+_ccenv_print_after_switch_call() {
+  echo 'type claude_env_after_switch > /dev/null 2>&1 && claude_env_after_switch'
+}
+
+if [ "$name" = "--unset" ]; then
+  echo "unset CCENV_PROFILE"
+  _ccenv_print_resolve_call
+  _ccenv_print_after_switch_call
+  exit 0
+fi
+
+if ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+if ! _ccenv_is_registered "$name"; then
+  echo "ccenv: \`$name' is not a registered profile" >&2
+  exit 1
+fi
+
+echo "export CCENV_PROFILE=\"${name}\""
+_ccenv_print_resolve_call
+_ccenv_print_after_switch_call

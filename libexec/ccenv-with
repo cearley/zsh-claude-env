@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Summary: Run a command with a specific profile active for one invocation
+# Usage: ccenv with <name> <cmd> [<arg>...]
+#
+# Resolves <name>'s real directory via the $CCENV_ROOT/profiles/<name>
+# symlink and execs <cmd> with CLAUDE_CONFIG_DIR pinned to that directory
+# for this process only -- same convention as `env FOO=bar cmd`. Never
+# touches shell/local/global state (no file is written, no shell
+# variable in the calling shell is set) and never requires
+# `eval "$(ccenv init -)"` to be active: this is a plain subprocess exec,
+# with nothing for a parent shell to need to pick up afterward.
+#
+# Fails non-zero, printing an error to stderr and never starting <cmd>,
+# if <name> isn't a registered profile.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+usage() {
+  echo "Usage: ccenv with <name> <cmd> [<arg>...]" >&2
+}
+
+name="$1"
+
+if [ -z "$name" ]; then
+  usage
+  exit 1
+fi
+shift
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+if ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+if ! _ccenv_is_registered "$name"; then
+  echo "ccenv: \`$name' is not a registered profile" >&2
+  exit 1
+fi
+
+real_dir="$($(type -P greadlink readlink | head -1) "$CCENV_ROOT/profiles/$name")"
+
+export CLAUDE_CONFIG_DIR="$real_dir"
+exec "$@"

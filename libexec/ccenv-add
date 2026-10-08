@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Summary: Register a Claude Code environment directory as a ccenv profile
+# Usage: ccenv add <name> <path>
+#        ccenv add <name> --new
+#        ccenv add --discover
+#
+# Three modes:
+#
+#   ccenv add <name> <path>
+#     Registers an existing directory as profile <name>, via a symlink at
+#     $CCENV_ROOT/profiles/<name> -> <path>'s resolved absolute path.
+#     Nothing at <path> is copied, moved, or modified. Fails with no
+#     change if <path> doesn't exist or <name> is already registered.
+#
+#   ccenv add <name> --new
+#     Bootstraps a brand-new, empty environment. Every profile under
+#     $CCENV_ROOT/profiles is a symlink (matching the one storage
+#     convention this command and ccenv's resolver both rely on), so
+#     rather than making $CCENV_ROOT/profiles/<name> itself a real
+#     directory, the real empty directory is created at
+#     $CCENV_ROOT/homes/<name> and profiles/<name> is symlinked to it.
+#     This keeps `ccenv remove` (which only ever unlinks profiles/<name>)
+#     safe to implement uniformly across all three add modes, and keeps
+#     $CCENV_ROOT/profiles containing nothing but symlinks. Never invokes
+#     `claude` or otherwise initializes Claude Code's own state --
+#     that's the user's job, by running `claude` against the new profile
+#     at least once.
+#
+#   ccenv add --discover
+#     Scans $HOME/.claude-* (the OLD zsh-claude-env plugin's
+#     convention-based directories -- note this is the real $HOME, not
+#     $CCENV_ROOT) and registers each one containing a .claude.json file
+#     that isn't already registered under ANY existing profile name
+#     (compared by resolved real path, not just by the name that would
+#     be derived for it), as a profile named after the directory with
+#     its "claude-" prefix removed. Reports, per scanned directory, one
+#     of: registered, skipped (already registered), skipped (no
+#     .claude.json).
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+CCENV_ROOT="${CCENV_ROOT:-$HOME/.ccenv}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: ccenv add <name> <path>
+       ccenv add <name> --new
+       ccenv add --discover
+EOF
+}
+
+# Resolves an existing directory to its absolute, physical path (symlinks
+# followed) so a profile symlink never ends up pointing at a relative
+# path, and so discovery can compare directories by real identity rather
+# than by whatever string happened to name them.
+_ccenv_realdir() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+
+_ccenv_is_registered() {
+  [ -L "${CCENV_ROOT}/profiles/$1" ]
+}
+
+# Mirrors libexec/ccenv--resolve.sh's _ccenv_valid_name (duplicated here
+# rather than sourced, consistent with this repo's existing small-helper
+# duplication across libexec scripts -- see ccenv-list's own comment on
+# the same pattern): true only for a name safe to use as a path
+# component under $CCENV_ROOT/profiles.
+_ccenv_valid_name() {
+  case "$1" in
+  '' | . | .. | */*) return 1 ;;
+  esac
+  return 0
+}
+
+if [ "$1" = "--discover" ]; then
+  shift
+  shopt -s nullglob
+  candidates=("$HOME"/.claude-*/)
+  shopt -u nullglob
+
+  if [ "${#candidates[@]}" -eq 0 ]; then
+    echo "no ~/.claude-* directories found"
+    exit 0
+  fi
+
+  for dir in "${candidates[@]}"; do
+    dir="${dir%/}"
+    base="${dir##*/}"
+    name="${base#.claude-}"
+
+    if ! _ccenv_valid_name "$name"; then
+      echo "skipped (invalid name): ${dir}"
+      continue
+    fi
+
+    if [ ! -f "${dir}/.claude.json" ]; then
+      echo "skipped (no .claude.json): ${dir}"
+      continue
+    fi
+
+    dir_real="$(_ccenv_realdir "$dir")"
+
+    already_registered=0
+    if [ -d "${CCENV_ROOT}/profiles" ]; then
+      for existing in "${CCENV_ROOT}/profiles"/*; do
+        [ -L "$existing" ] || continue
+        existing_real="$(_ccenv_realdir "$existing" 2>/dev/null || true)"
+        if [ -n "$existing_real" ] && [ "$existing_real" = "$dir_real" ]; then
+          already_registered=1
+          break
+        fi
+      done
+    fi
+
+    if [ "$already_registered" -eq 1 ] || _ccenv_is_registered "$name"; then
+      echo "skipped (already registered): ${dir}"
+      continue
+    fi
+
+    mkdir -p "${CCENV_ROOT}/profiles"
+    ln -s "$dir_real" "${CCENV_ROOT}/profiles/${name}"
+    echo "registered: ${dir} -> ${name}"
+  done
+
+  exit 0
+fi
+
+name="$1"
+second="$2"
+
+if [ -z "$name" ] || [ -z "$second" ]; then
+  usage
+  exit 1
+fi
+
+if ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+if _ccenv_is_registered "$name"; then
+  echo "ccenv: profile '${name}' is already registered" >&2
+  exit 1
+fi
+
+if [ "$second" = "--new" ]; then
+  mkdir -p "${CCENV_ROOT}/homes" "${CCENV_ROOT}/profiles"
+  home_dir="${CCENV_ROOT}/homes/${name}"
+  if [ -e "$home_dir" ]; then
+    echo "ccenv: ${home_dir} already exists" >&2
+    exit 1
+  fi
+  mkdir "$home_dir"
+  ln -s "$home_dir" "${CCENV_ROOT}/profiles/${name}"
+  echo "registered: ${name} (new, empty directory)"
+  exit 0
+fi
+
+target="$second"
+
+if [ ! -d "$target" ]; then
+  echo "ccenv: no such directory: ${target}" >&2
+  exit 1
+fi
+
+target_real="$(_ccenv_realdir "$target")"
+
+mkdir -p "${CCENV_ROOT}/profiles"
+ln -s "$target_real" "${CCENV_ROOT}/profiles/${name}"
+echo "registered: ${target_real} -> ${name}"

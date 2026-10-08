@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Summary: Get or set the global default profile
+#
+# Usage: ccenv global
+#        ccenv global <name>
+#        ccenv global --unset
+#
+# `ccenv global <name>` sets <name> as the machine-wide default profile,
+# persisted in $CCENV_ROOT/profile, but only if <name> is a registered
+# profile (a symlink at $CCENV_ROOT/profiles/<name>) — otherwise this
+# errors to stderr, exits non-zero, and leaves the file unchanged.
+#
+# With no argument, prints the current global default, or a message
+# indicating none is set. `ccenv global --unset` removes the file (no
+# error if it was already absent).
+#
+# A SET or --unset here only has any visible effect once shell
+# integration (`eval "$(ccenv init -)"`) is active -- that's what keeps
+# CLAUDE_CONFIG_DIR exported to match. If CCENV_LOADED (the marker
+# ccenv-init exports) is absent, this still performs the write and exits
+# 0 -- it's a warning, not an error, since the file itself is written
+# regardless of whether anything is watching it -- but warns on stderr
+# first. The no-argument GET path never warns.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+name="$1"
+
+if [ -z "$name" ]; then
+  if _ccenv_global_lookup && [ -n "$REPLY" ]; then
+    echo "$REPLY"
+    exit 0
+  fi
+  echo "ccenv: no global default set" >&2
+  exit 1
+fi
+
+if [ -z "$CCENV_LOADED" ]; then
+  echo 'ccenv: warning: shell integration not active — run eval "$(ccenv init -)" first' >&2
+fi
+
+if [ "$name" = "--unset" ]; then
+  rm -f "$CCENV_ROOT/profile"
+  exit 0
+fi
+
+if ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+if ! _ccenv_is_registered "$name"; then
+  echo "ccenv: \`$name' is not a registered profile" >&2
+  exit 1
+fi
+
+mkdir -p "$CCENV_ROOT"
+printf '%s\n' "$name" > "$CCENV_ROOT/profile"

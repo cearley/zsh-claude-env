@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ccenv's dispatcher: looks at $1 (the subcommand name), finds an
+# executable named `ccenv-<subcommand>` on a PATH that includes this
+# directory (libexec/), and execs it with the remaining arguments.
+#
+# bin/ccenv (and the bin/cenv, bin/ccv aliases) are symlinks to this
+# file, so this script only ever looks at $1 onward for the subcommand
+# — it never branches on argv[0], which is how all three names end up
+# fully equivalent.
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+# Resolve a symlink one level, so that invoking via any of the bin/
+# symlinks still yields this file's own directory (libexec/) rather
+# than bin/.
+resolve_link() {
+  if [ -L "$1" ]; then
+    $(type -P greadlink readlink | head -1) "$1"
+  fi
+}
+
+abs_dirname() {
+  local cwd="$(pwd)"
+  local path="$1"
+
+  while [ -n "$path" ]; do
+    cd "${path%/*}"
+    local name="${path##*/}"
+    path="$(resolve_link "$name" || true)"
+  done
+
+  pwd
+  cd "$cwd"
+}
+
+bin_path="$(abs_dirname "$0")"
+export PATH="${bin_path}:${PATH}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: ccenv <command> [<args>]
+
+Commands:
+   add        Register an existing, new, or auto-discovered profile
+   remove     Unregister a profile
+   list       List registered profiles
+   global     Get or set the global default profile
+   local      Get or set the per-directory profile
+   shell      Get or set this shell session's profile
+   profile    Show the resolved profile and which tier set it
+   with       Run a command with a specific profile active
+   init       Print shell integration setup code (for eval)
+EOF
+}
+
+command="$1"
+
+case "$command" in
+"" | "-h" | "--help" )
+  usage
+  exit 1
+  ;;
+* )
+  command_path="$(command -v "ccenv-$command" || true)"
+  if [ -z "$command_path" ]; then
+    echo "ccenv: no such command \`$command'" >&2
+    exit 1
+  fi
+
+  shift 1
+  exec "$command_path" "$@"
+  ;;
+esac

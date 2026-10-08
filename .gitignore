@@ -1,3 +1,12 @@
 .claude/
 .omc/
 .specstory/
+
+# ccenv's own state directories, created at its CCENV_ROOT -- which
+# README.md documents as this repo itself when cloned to ~/.ccenv (the
+# default). profiles/ and profile hold symlinks/pointers to registered
+# environments, and homes/ can contain real Claude Code credentials and
+# history for any profile created via `ccenv add <name> --new`.
+/profiles
+/profile
+/homes

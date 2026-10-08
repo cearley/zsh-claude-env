@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Summary: Report the resolved profile and which tier produced it
+#
+# Usage: ccenv profile
+#
+# Prints the currently resolved profile (shell > local > global
+# precedence — see libexec/ccenv--resolve.sh) and which tier produced it,
+# e.g. `work (local)`. Prints a "no profile active" message if no tier
+# yields a value. This is a query, not an error condition: it exits 0
+# either way.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+if _ccenv_resolve; then
+  echo "$CCENV_RESOLVED_PROFILE ($CCENV_RESOLVED_TIER)"
+else
+  echo "no profile active"
+fi
+
+exit 0

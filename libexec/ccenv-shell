@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Summary: Fail clearly when `ccenv shell` is invoked without shell integration
+#
+# Usage: ccenv shell <name>
+#        ccenv shell --unset
+#
+# `ccenv shell` only ever has an effect when the `ccenv()` shell function
+# installed by `eval "$(ccenv init -)"` intercepts the `shell` subcommand
+# and routes it through `ccenv sh-shell` (see libexec/ccenv-sh-shell) for
+# the calling shell to `eval` -- that's the only mechanism that can
+# mutate a shell's own environment from a subcommand. bin/ccenv's plain
+# dispatcher reaches THIS script (ccenv-shell, no `sh-` prefix) only when
+# that interception never happened, i.e. shell integration isn't active
+# in the current shell. Unlike `global`/`local` (which still persist a
+# file to disk even without integration, so warn-then-continue makes
+# sense there), `shell` has *zero* effect without integration: there is
+# nothing useful to do here but fail clearly, so this is a hard failure,
+# not a warning.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+name="$1"
+
+if [ -n "$name" ] && [ "$name" != "--unset" ] && ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+echo 'ccenv: shell integration not enabled — run eval "$(ccenv init -)" first' >&2
+exit 1

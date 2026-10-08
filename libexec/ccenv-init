@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# Summary: Configure the shell environment for ccenv
+# Usage: eval "$(ccenv init - [<shell>])"
+#
+# A child process can never mutate its parent shell's environment
+# directly, so `ccenv init -` doesn't try to — it PRINTS shell code for
+# the caller to `eval`. That printed code:
+#   1. Prepends ccenv's own bin/ directory to PATH.
+#   2. Defines a `ccenv()` shell function. Only `shell` sets live,
+#      in-session shell state (CCENV_PROFILE) that nothing but this
+#      function can reach, so only `shell` runs the real `ccenv
+#      sh-shell` eval-target variant and `eval`s ITS stdout in the
+#      current shell instead of running it directly. `local`/`global`
+#      both write their own file directly and deliberately have no
+#      eval-target counterpart; every other subcommand just runs
+#      normally too.
+#   3. Defines `_ccenv_hook`, then calls it once immediately so this
+#      shell is already correct before its first prompt.
+#   4. Registers `_ccenv_hook` to catch everything else that can change
+#      the resolved profile without a live-shell-state update already
+#      happening as part of running: a plain `cd`, or `local`/`global`
+#      just having written a file. `shell` is the only case step 2
+#      already updates CLAUDE_CONFIG_DIR for directly.
+#
+# `_ccenv_hook` is registered on BOTH precmd and chpwd for zsh, plus
+# PROMPT_COMMAND for bash, which has neither. All the actual resolution
+# logic — shell>local>global precedence, computing the real directory,
+# not clobbering a CLAUDE_CONFIG_DIR ccenv doesn't own — lives in one
+# place, `ccenv sh-resolve` (read it for the full rationale), not
+# inlined here. The hook itself is the same one-liner in both shells;
+# only ITS REGISTRATION differs, since zsh and bash have no common hook
+# mechanism.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+print=""
+for arg in "$@"; do
+  if [ "$arg" = "-" ]; then
+    print=1
+    shift
+  fi
+done
+
+shell="$1"
+if [ -z "$shell" ]; then
+  # Inspect the parent process's argv[0] rather than trusting $SHELL,
+  # since $SHELL is the user's login shell and may not be the shell
+  # actually invoking `ccenv init -`.
+  shell="$(ps -p "$PPID" -o 'args=' 2>/dev/null || true)"
+  shell="${shell%% *}"
+  shell="${shell##-}"
+  shell="${shell:-$SHELL}"
+  shell="${shell##*/}"
+fi
+
+resolve_link() {
+  if [ -L "$1" ]; then
+    $(type -P greadlink readlink | head -1) "$1"
+  fi
+}
+
+abs_dirname() {
+  local cwd="$(pwd)"
+  local path="$1"
+
+  while [ -n "$path" ]; do
+    cd "${path%/*}"
+    local name="${path##*/}"
+    path="$(resolve_link "$name" || true)"
+  done
+
+  pwd
+  cd "$cwd"
+}
+
+if [ -z "$print" ]; then
+  case "$shell" in
+  bash ) profile='~/.bash_profile' ;;
+  zsh )  profile='~/.zshrc' ;;
+  * )    profile='your profile' ;;
+  esac
+  { echo "# Load ccenv automatically by adding"
+    echo "# the following to ${profile}:"
+    echo
+    echo 'eval "$(ccenv init -)"'
+    echo
+  } >&2
+  exit 1
+fi
+
+case "$shell" in
+bash | zsh )
+  : # supported, continue below
+  ;;
+* )
+  echo "ccenv: unsupported shell${shell:+: $shell}" >&2
+  exit 1
+  ;;
+esac
+
+root="$(cd "$(abs_dirname "$0")/.." && pwd)"
+
+# ----------------------------------------------------------------------
+# Shared code: identical for bash and zsh.
+# ----------------------------------------------------------------------
+echo "export PATH=\"${root}/bin:\${PATH}\""
+echo "export CCENV_SHELL=$shell"
+echo "export CCENV_LOADED=1"
+# Nothing the live shell itself runs calls into ccenv--resolve.sh's
+# functions directly (ccenv() only ever execs `command ccenv ...`
+# subprocesses, or calls _ccenv_hook, which is itself just one more
+# subprocess call) -- so this only needs CCENV_ROOT exported, not the
+# whole file sourced, so that those subprocesses inherit a
+# user-customized value instead of each falling back to their own
+# default independently.
+echo "export CCENV_ROOT=\"\${CCENV_ROOT:-\$HOME/.ccenv}\""
+echo
+
+cat <<'EOS'
+ccenv() {
+  type typeset &> /dev/null && typeset command
+  command="$1"
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+  shell)
+    # `eval`'s own exit status is that of the LAST command in the
+    # evaluated string (0 if the string is empty) -- NOT the exit status
+    # of the `command ccenv sh-shell ...` invocation that produced it.
+    # Capture the subcommand's real exit status separately so e.g.
+    # `ccenv shell bogus` (an unregistered name, which still prints a
+    # correct stderr error) propagates its failure instead of this
+    # wrapper silently returning 0.
+    #
+    # Only `shell` sets live, in-session shell state that nothing but
+    # this wrapper can reach, so only `shell` needs an eval target.
+    local out rc
+    out="$(command ccenv "sh-$command" "$@")"
+    rc=$?
+    eval "$out"
+    return $rc
+    ;;
+  local | global)
+    # Unlike `shell`, these just write a file -- a plain subprocess can
+    # do that fine, so no eval target exists for either. The
+    # already-registered _ccenv_hook would pick up the written file on
+    # its own by the next prompt regardless (precmd fires after every
+    # command, not just `cd`) -- calling it here too, directly (a plain
+    # function call, not eval, since we're already running in the live
+    # shell), just makes CLAUDE_CONFIG_DIR correct within the SAME
+    # command instead of one prompt later, closing the `ccenv local
+    # work && claude` race. Skipped on failure (e.g. an unregistered
+    # name) so nothing changes when the real command didn't do
+    # anything.
+    local rc
+    command ccenv "$command" "$@"
+    rc=$?
+    [ $rc -eq 0 ] && _ccenv_hook
+    return $rc
+    ;;
+  *)
+    command ccenv "$command" "$@"
+    ;;
+  esac
+}
+
+# Short aliases: full equivalents of ccenv(), not restricted subsets --
+# defined as functions (not left to bin/cenv, bin/ccv's own symlinks)
+# specifically so that invoking a state-mutating subcommand by either
+# alias ALSO gets intercepted and routed through the eval dance above,
+# exactly as invoking it via `ccenv` would. A bare PATH symlink alone
+# can't do that: a child process can never mutate its parent shell's
+# environment, which is the whole reason `ccenv()` exists as a function
+# in the first place.
+cenv() { ccenv "$@"; }
+ccv() { ccenv "$@"; }
+
+# The entire automatic (cd-triggered) mechanism: fork one subprocess
+# that does ALL the work -- resolve, decide what changed, decide what's
+# safe to unset -- and eval whatever it prints. See ccenv-sh-resolve
+# for that logic; nothing is duplicated here.
+_ccenv_hook() {
+  eval "$(command ccenv sh-resolve)"
+}
+
+# Run it once, right now, so this shell is correct before its first
+# prompt -- the exact same call the hook keeps making afterward, so
+# there's no separate "initial" logic to keep in sync, and re-running
+# `eval "$(ccenv init -)"` (e.g. re-sourcing .zshrc) naturally re-syncs
+# everything too.
+_ccenv_hook
+EOS
+echo
+
+# ----------------------------------------------------------------------
+# Shell-specific code: ONLY the hook registration differs between bash
+# and zsh -- `_ccenv_hook` itself, defined above, is identical in both.
+# ----------------------------------------------------------------------
+case "$shell" in
+zsh )
+  cat <<'EOS'
+typeset -ag precmd_functions
+if (( ! ${precmd_functions[(I)_ccenv_hook]} )); then
+  precmd_functions=(_ccenv_hook $precmd_functions)
+fi
+typeset -ag chpwd_functions
+if (( ! ${chpwd_functions[(I)_ccenv_hook]} )); then
+  chpwd_functions=(_ccenv_hook $chpwd_functions)
+fi
+EOS
+  ;;
+bash )
+  cat <<'EOS'
+if [[ ";${PROMPT_COMMAND:-};" != *";_ccenv_hook;"* ]]; then
+  PROMPT_COMMAND="_ccenv_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+fi
+EOS
+  ;;
+esac

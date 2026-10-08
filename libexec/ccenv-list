@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Summary: List registered ccenv profiles
+# Usage: ccenv list
+#
+# Prints every profile registered under $CCENV_ROOT/profiles, marking
+# whichever one is currently active and which precedence tier made it
+# so (shell/local/global).
+#
+# Precedence: $CCENV_PROFILE (shell) > nearest ancestor .claude-profile
+# file, searching $PWD upward (local) > $CCENV_ROOT/profile (global).
+# Resolution itself lives in ccenv--resolve.sh, shared with
+# ccenv-profile/-global/-local/-sh-shell, so this never drifts from
+# their behavior (e.g. whitespace-trimming, invalid-name handling).
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+_ccenv_resolve || true
+
+if [ ! -d "${CCENV_ROOT}/profiles" ] || [ -z "$(ls -A "${CCENV_ROOT}/profiles" 2>/dev/null)" ]; then
+  echo "no profiles registered"
+  exit 0
+fi
+
+for link in "${CCENV_ROOT}/profiles"/*; do
+  name="${link##*/}"
+  if [ -n "$CCENV_RESOLVED_PROFILE" ] && [ "$name" = "$CCENV_RESOLVED_PROFILE" ]; then
+    echo "* ${name} (active, ${CCENV_RESOLVED_TIER})"
+  else
+    echo "  ${name}"
+  fi
+done

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Summary: Print shell code that resolves and exports CLAUDE_CONFIG_DIR
+#
+# Usage: ccenv sh-resolve
+#
+# All the logic for the automatic path lives in this one call, not
+# inlined in the hook that invokes it. The hook installed by `ccenv
+# init -` is just `eval "$(command ccenv sh-resolve)"`, registered on
+# precmd AND chpwd in zsh, and via PROMPT_COMMAND in bash, which has
+# neither. Firing on every prompt (not just `cd`) is also what picks up
+# a plain `ccenv local`/`ccenv global` file write on the very next
+# prompt -- neither of those commands needs its own eval-target
+# counterpart (see ccenv-sh-shell's header comment for why `shell` is
+# the one exception).
+#
+# Resolves shell>local>global and prints the matching export/unset
+# statement for CLAUDE_CONFIG_DIR, plus an updated _CCENV_EXPORTED_DIR
+# (exported, so the next call -- a separate subprocess -- can still see
+# it) tracking what ccenv itself last exported. When nothing resolves,
+# CLAUDE_CONFIG_DIR is only unset if its CURRENT value (also inherited)
+# still equals _CCENV_EXPORTED_DIR -- a value set by something else
+# entirely (e.g. a static chezmoi-managed export, or the user's own
+# later `export`) is left untouched, since ccenv never owned it.
+#
+# Deliberately does NOT invoke claude_env_after_switch -- that only
+# fires from explicit `ccenv shell` (see ccenv-sh-shell), which already
+# knows what changed without needing to compare against a remembered
+# previous value. This automatic path has no such comparison at all,
+# and `local`/`global` never fire it either way, matching `global`'s
+# original scope.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+bin_path="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ccenv--resolve.sh
+source "$bin_path/ccenv--resolve.sh"
+
+if _ccenv_resolve; then
+  # `_ccenv_real_dir_for` can itself fail (a registered-looking but
+  # actually dangling symlink, or a resolver bug letting through a name
+  # that isn't truly registered) -- under `set -e`, letting that abort
+  # this script would exit having printed NOTHING, leaving
+  # CLAUDE_CONFIG_DIR as whatever the PREVIOUS directory exported
+  # (a stale value, not "nothing resolved"). Treat that failure exactly
+  # like "nothing resolved" instead, so it falls into the
+  # ownership-guarded unset branch below like any other non-resolution.
+  dir="$(_ccenv_real_dir_for "$CCENV_RESOLVED_PROFILE")" || dir=""
+else
+  dir=""
+fi
+
+if [ -n "$dir" ]; then
+  echo "export CLAUDE_CONFIG_DIR=\"$dir\""
+  echo "export _CCENV_EXPORTED_DIR=\"$dir\""
+elif [ -n "$_CCENV_EXPORTED_DIR" ] && [ "$CLAUDE_CONFIG_DIR" = "$_CCENV_EXPORTED_DIR" ]; then
+  echo "unset CLAUDE_CONFIG_DIR"
+  echo "unset _CCENV_EXPORTED_DIR"
+fi

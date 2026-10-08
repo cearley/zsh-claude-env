@@ -28,11 +28,19 @@ Exposes a stable, minimal surface — two state values and two optional hook poi
 - **THEN** `_claude_env_baseline_label` is set to an empty string
 
 ### Requirement: After-switch hook point
-If a `claude_env_after_switch` function is defined at the time `claude-env <name>` performs a successful switch, it SHALL be called with no arguments immediately after `CLAUDE_CONFIG_DIR` is exported. Its presence SHALL be checked at call time, not at plugin-load time, so it is safe to define in a file that sources after this plugin.
+If a `claude_env_after_switch` function is defined, it SHALL be called with no arguments whenever `ccenv shell` (set or unset) performs an explicit switch. This plugin itself no longer triggers it — the trigger is the standalone `ccenv` CLI (see the `ccenv-resolution` capability). Its presence SHALL be checked at call time, not at plugin-load time, so it is safe to define in a file that sources after this plugin.
 
 #### Scenario: Hook defined after plugin load
-- **WHEN** `claude_env_after_switch` is defined later (e.g. in `~/.p10k.zsh`, which sources after this plugin) and a switch later succeeds
+- **WHEN** `claude_env_after_switch` is defined later (e.g. in `~/.p10k.zsh`, which sources after this plugin) and the user later runs `ccenv shell <name>`
 - **THEN** the hook is called
+
+#### Scenario: No call on a directory change or a local/global write
+- **WHEN** `claude_env_after_switch` is defined and either a `cd` or `ccenv local`/`ccenv global` changes the resolved profile with no explicit `ccenv shell` run
+- **THEN** `claude_env_after_switch` is not called — the automatic, directory-triggered side of `ccenv` only keeps `CLAUDE_CONFIG_DIR` correct, it doesn't notify anything
+
+#### Scenario: ccenv not installed
+- **WHEN** `ccenv` is not installed or its shell integration is not active
+- **THEN** nothing in this plugin calls `claude_env_after_switch`; `CLAUDE_CONFIG_DIR` simply remains whatever it was last set to, same as before this hook point existed
 
 ### Requirement: Git context hook point
 If a `claude_env_git_context_hook` function is defined, the plugin's internal git-context resolution SHALL try it first. The hook SHALL set `REPLY` to `"<repo>"` or `"<repo> · <branch>"` and return a zero exit status on success, in which case the plugin SHALL use that value as-is and SHALL NOT fork `git`. A non-zero return SHALL cause the plugin to fall back to its own `git rev-parse --show-toplevel` / `git branch --show-current` resolution.

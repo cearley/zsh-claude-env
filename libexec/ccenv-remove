@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Summary: Unregister a ccenv profile
+# Usage: ccenv remove <name>
+#
+# Deletes ONLY the symlink at $CCENV_ROOT/profiles/<name>. `rm` is run on
+# the symlink path itself -- never dereferenced -- so whatever real
+# directory it points to (an existing directory passed to `ccenv add
+# <name> <path>`, a $CCENV_ROOT/homes/<name> directory created by `ccenv
+# add <name> --new`, or a ~/.claude-* directory registered by `ccenv add
+# --discover`) is always left fully intact.
+
+set -e
+[ -n "$CCENV_DEBUG" ] && set -x
+
+CCENV_ROOT="${CCENV_ROOT:-$HOME/.ccenv}"
+
+# Mirrors libexec/ccenv--resolve.sh's _ccenv_valid_name (duplicated here
+# rather than sourced, consistent with this repo's existing small-helper
+# duplication across libexec scripts -- see ccenv-list's own comment on
+# the same pattern): true only for a name safe to use as a path
+# component under $CCENV_ROOT/profiles.
+_ccenv_valid_name() {
+  case "$1" in
+  '' | . | .. | */*) return 1 ;;
+  esac
+  return 0
+}
+
+name="$1"
+
+if [ -z "$name" ]; then
+  echo "Usage: ccenv remove <name>" >&2
+  exit 1
+fi
+
+if ! _ccenv_valid_name "$name"; then
+  echo "ccenv: '${name}' is not a valid profile name" >&2
+  exit 1
+fi
+
+link="${CCENV_ROOT}/profiles/${name}"
+
+if [ ! -L "$link" ]; then
+  echo "ccenv: no such profile: ${name}" >&2
+  exit 1
+fi
+
+rm "$link"
+echo "removed: ${name}"

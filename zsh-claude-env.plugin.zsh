@@ -1,21 +1,25 @@
-# zsh-claude-env — multi-environment wrapper functions, a session switcher,
-# and terminal-title integration for Claude Code (https://claude.ai/code).
-# Modeled on oh-my-zsh's built-in `aws` plugin (`asp`/`asr`):
-# https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/aws
+# zsh-claude-env — terminal-title integration and extension hooks for
+# Claude Code (https://claude.ai/code).
 #
-# Environments are discovered by globbing $HOME/.claude-* directories at
-# load time, filtered to those containing a .claude.json file (written by
-# Claude Code on first invocation against a CLAUDE_CONFIG_DIR) — a directory
-# that merely matches the naming convention is otherwise ignored. There is
-# nothing to configure to make wrapper functions or the switcher appear.
+# This is the optional oh-my-zsh half of a two-part repo; the other half is
+# `ccenv`, a standalone CLI that owns profile discovery, registration, and
+# switching (shell>local>global precedence) independent of oh-my-zsh — see
+# README for `ccenv`'s install and usage. This plugin has zero dependency on
+# `ccenv`: with `ccenv` not installed, it simply reads whatever
+# CLAUDE_CONFIG_DIR happens to be set to, same as always. With `ccenv`
+# installed and its shell integration active (`eval "$(ccenv init -)"`),
+# `ccenv`'s own precmd hook keeps CLAUDE_CONFIG_DIR exported to the resolved
+# profile, and this plugin's title hooks just reflect whatever that is.
 #
 # The active environment's name (_claude_env_name) and the environment
 # captured at load time (_claude_env_baseline_label) are exposed as plain
 # globals for use in a prompt or elsewhere. Two optional hook functions, if
 # defined elsewhere, are called at the relevant point: claude_env_after_switch
-# (after `claude-env <name>` switches) and claude_env_git_context_hook (in
-# place of the plain git fork used for the terminal title). See README for a
-# Powerlevel10k example defining both.
+# (called by `ccenv shell` on an explicit switch only — never on a plain
+# `cd`, nor on `ccenv local`/`ccenv global`; this plugin's own code never
+# calls it; see README's "ccenv: profile resolution" section) and
+# claude_env_git_context_hook (in place of the plain git fork used for the
+# terminal title). See README for a Powerlevel10k example defining both.
 #
 # ------------------------------------------------------------------------
 # Config variables (all optional; set anywhere, read lazily at hook-invocation
@@ -25,16 +29,6 @@
 #   CLAUDE_ENV_TITLE_HOOKS   true|false, default true. Toggles the OSC-0
 #                            terminal-title feature (precmd/preexec hooks
 #                            below), independent of everything else.
-#
-# The claude config dir path convention ($HOME/.claude-<name>) and the
-# per-env local override file ($HOME/.config/claude-env/<name>.env) are
-# intentionally not configurable.
-#
-# Limitation: a brand-new environment has no claude-<name>() function until
-# its $HOME/.claude-<name> directory exists on disk *and* contains a
-# .claude.json (i.e. `claude` has been invoked against it at least once)
-# *and* a new shell session re-globs. Bootstrap one with
-# `CLAUDE_CONFIG_DIR=$HOME/.claude-<name> claude` once, then open a new shell.
 
 : ${CLAUDE_ENV_TITLE_HOOKS:=true}
 
@@ -143,70 +137,3 @@ if [ -n "$CLAUDE_CONFIG_DIR" ]; then
     _claude_env_baseline_label="$REPLY"
   }
 fi
-
-# ------------------------------------------------------------------------
-# Discover environments by globbing $HOME/.claude-* directories.
-# ------------------------------------------------------------------------
-typeset -ga _claude_env_names
-_claude_env_names=()
-local _claude_env_dir
-for _claude_env_dir in $HOME/.claude-*(N/); do
-  # Gate on .claude.json rather than the directory alone, to reject
-  # unrelated directories that merely match the naming convention (e.g. a
-  # ~/.claude-notes/ folder with no relation to Claude Code).
-  [ -f "$_claude_env_dir/.claude.json" ] || continue
-  _claude_env_names+=("${${_claude_env_dir:t}#.claude-}")
-done
-
-# ------------------------------------------------------------------------
-# Per-environment wrapper functions: claude-<name>
-# ------------------------------------------------------------------------
-# Generated at RUNTIME from the discovered environments. Each claude-<name>
-# runs `claude` once with CLAUDE_CONFIG_DIR pinned to that environment,
-# inside a subshell `( ... )` so the assignment and any sourced .env file
-# below never leak into the interactive shell. The generated body is a
-# string containing $_claude_env_n verbatim, so it is only ever safe to
-# generate when the name is restricted to a known-safe character set —
-# hence the guard below, rather than embedding an arbitrary directory name
-# into code. `claude-env <name>` (below) has no such restriction, since it
-# only ever uses $1 as quoted variable *data*, never as generated code.
-local _claude_env_n
-for _claude_env_n in "${_claude_env_names[@]}"; do
-  case "$_claude_env_n" in
-    (""|*[!A-Za-z0-9_-]*)
-      print -u2 "zsh-claude-env: skipping ~/.claude-$_claude_env_n — name must contain only letters, digits, '_', '-' to generate a claude-<name> function; claude-env $_claude_env_n still works."
-      continue
-      ;;
-  esac
-  functions[claude-$_claude_env_n]="(
-    [ -f \"\$HOME/.config/claude-env/$_claude_env_n.env\" ] && . \"\$HOME/.config/claude-env/$_claude_env_n.env\"
-    CLAUDE_CONFIG_DIR=\"\$HOME/.claude-$_claude_env_n\" exec command claude \"\$@\"
-  )"
-done
-
-unset _claude_env_dir _claude_env_n
-
-# ------------------------------------------------------------------------
-# claude-env — switch the active environment for this shell session
-# ------------------------------------------------------------------------
-# Usage: claude-env [name]   (no args = print current)
-# Validates $1 against the discovered environment set at runtime (zsh
-# index-search idiom: (Ie) = reverse, exact match; nonzero index = found).
-claude-env() {
-  local REPLY
-  if [ -z "$1" ]; then
-    _claude_env_name
-    echo "${REPLY:-(none)}"
-    return
-  fi
-  if (( ${_claude_env_names[(Ie)$1]} )); then
-    export CLAUDE_CONFIG_DIR="$HOME/.claude-$1"
-    # claude_env_after_switch, if defined, is called here — e.g. a p10k user
-    # can define it to call `p10k reload` so a prompt segment updates
-    # immediately (see README).
-    (( $+functions[claude_env_after_switch] )) && claude_env_after_switch
-    return
-  fi
-  echo "Usage: claude-env [${(j:|:)_claude_env_names}]" >&2
-  return 1
-}
