@@ -1,51 +1,41 @@
-# zsh-claude-env — multi-environment wrapper functions, session switcher,
-# terminal-title integration, and a Powerlevel10k segment for Claude Code
-# (https://claude.ai/code). Modeled on oh-my-zsh's built-in `aws` plugin
-# (`asp`/`asr`): https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/aws
+# zsh-claude-env — multi-environment wrapper functions, a session switcher,
+# and terminal-title integration for Claude Code (https://claude.ai/code).
+# Modeled on oh-my-zsh's built-in `aws` plugin (`asp`/`asr`):
+# https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/aws
 #
 # Environments are discovered by globbing $HOME/.claude-* directories at
-# load time — there is nothing to configure to make wrapper functions or
-# the switcher appear. Only display preferences for the p10k segment are
-# configurable, via the variables below.
+# load time, filtered to those containing a .claude.json file (written by
+# Claude Code on first invocation against a CLAUDE_CONFIG_DIR) — a directory
+# that merely matches the naming convention is otherwise ignored. There is
+# nothing to configure to make wrapper functions or the switcher appear.
+#
+# The active environment's name (_claude_env_name) and the environment
+# captured at load time (_claude_env_baseline_label) are exposed as plain
+# globals for use in a prompt or elsewhere. Two optional hook functions, if
+# defined elsewhere, are called at the relevant point: claude_env_after_switch
+# (after `claude-env <name>` switches) and claude_env_git_context_hook (in
+# place of the plain git fork used for the terminal title). See README for a
+# Powerlevel10k example defining both.
 #
 # ------------------------------------------------------------------------
-# Config variables (all optional; set anywhere, read lazily at prompt-render
+# Config variables (all optional; set anywhere, read lazily at hook-invocation
 # time — safe to set in ~/.p10k.zsh even though it's sourced after this
 # plugin loads)
 # ------------------------------------------------------------------------
-#   CLAUDE_ENV_COLORS        Associative array of name -> p10k color number, e.g.
-#                            typeset -gA CLAUDE_ENV_COLORS=(work 33 personal 76 bedrock 208)
-#                            Names not present here render in color 244 (grey).
-#
-#   CLAUDE_ENV_SHOW_DEFAULT  true|false, default true. When false, the p10k
-#                            segment is hidden while the active environment
-#                            equals whatever CLAUDE_CONFIG_DIR was already
-#                            set to at the moment THIS PLUGIN loaded (its
-#                            baseline) — mirrors POWERLEVEL9K_NVM_SHOW_SYSTEM
-#                            / the convention most p10k tool segments use:
-#                            only show state that differs from baseline.
-#                            There is no CLAUDE_ENV_DEFAULT variable — if you
-#                            want a baseline, export CLAUDE_CONFIG_DIR before
-#                            this plugin loads (i.e. before `plugins=(...)`
-#                            sources it), and the plugin captures it itself.
-#
 #   CLAUDE_ENV_TITLE_HOOKS   true|false, default true. Toggles the OSC-0
 #                            terminal-title feature (precmd/preexec hooks
 #                            below), independent of everything else.
 #
-# The claude config dir path convention ($HOME/.claude-<name>), the
-# per-env local override file ($HOME/.config/claude-env/<name>.env), and the
-# segment icon (nf-md-asterisk, U+F06C4) are intentionally NOT configurable —
-# not worth the surface area for a two-function plugin. Open an issue if you
-# disagree.
+# The claude config dir path convention ($HOME/.claude-<name>) and the
+# per-env local override file ($HOME/.config/claude-env/<name>.env) are
+# intentionally not configurable.
 #
 # Limitation: a brand-new environment has no claude-<name>() function until
-# its $HOME/.claude-<name> directory exists on disk and a new shell session
-# re-globs. Bootstrap one with `CLAUDE_CONFIG_DIR=$HOME/.claude-<name> claude`
-# once, then open a new shell.
+# its $HOME/.claude-<name> directory exists on disk *and* contains a
+# .claude.json (i.e. `claude` has been invoked against it at least once)
+# *and* a new shell session re-globs. Bootstrap one with
+# `CLAUDE_CONFIG_DIR=$HOME/.claude-<name> claude` once, then open a new shell.
 
-(( ${+CLAUDE_ENV_COLORS} )) || typeset -gA CLAUDE_ENV_COLORS=()
-: ${CLAUDE_ENV_SHOW_DEFAULT:=true}
 : ${CLAUDE_ENV_TITLE_HOOKS:=true}
 
 # ------------------------------------------------------------------------
@@ -64,18 +54,19 @@ _claude_env_name() {
 }
 
 # Sets REPLY to "<repo>" or "<repo> · <branch>", empty when not in a work tree.
+# If a claude_env_git_context_hook function is defined, it's tried first —
+# it should set REPLY and return 0 on success, non-zero to fall through to
+# the plain git fork below (e.g. a p10k user can define this to reuse
+# gitstatus data instead of forking git — see README).
 _claude_env_git_context() {
   local repo branch
   REPLY=""
-  if [ -n "${VCS_STATUS_WORKDIR}" ]; then
-    # Reuse gitstatus data already computed by p10k's vcs segment — no git fork.
-    repo="${VCS_STATUS_WORKDIR##*/}"
-    branch="${VCS_STATUS_LOCAL_BRANCH}"
-  else
-    repo=$(git rev-parse --show-toplevel 2>/dev/null) || return
-    repo="${repo##*/}"
-    branch=$(git branch --show-current 2>/dev/null)
+  if (( $+functions[claude_env_git_context_hook] )) && claude_env_git_context_hook; then
+    return
   fi
+  repo=$(git rev-parse --show-toplevel 2>/dev/null) || return
+  repo="${repo##*/}"
+  branch=$(git branch --show-current 2>/dev/null)
   REPLY="$repo${branch:+ · $branch}"
 }
 
@@ -130,17 +121,16 @@ add-zsh-hook precmd _claude_env_precmd
 add-zsh-hook preexec _claude_env_preexec
 
 # ------------------------------------------------------------------------
-# Capture the environment active when this plugin loaded, as the implicit
-# baseline for CLAUDE_ENV_SHOW_DEFAULT. Must happen before anything below
-# switches CLAUDE_CONFIG_DIR (it doesn't), and after _claude_env_name is
-# defined (it is).
+# Capture the environment active when this plugin loaded into
+# _claude_env_baseline_label, for consumers that want to compare the active
+# environment against this baseline (e.g. a p10k segment). Must run after
+# _claude_env_name is defined.
 #
 # Wrapped in an anonymous function so `local REPLY` always has a real
-# function scope to bind to. This file's top level isn't itself inside a
+# function scope to bind to — this file's top level isn't itself inside a
 # function when sourced directly (the standalone install path in the
-# README) — only oh-my-zsh's own loader happens to source plugins from
-# inside a function. Without this wrapper, a second `source` of this file
-# in the same shell (e.g. an ordinary `source ~/.zshrc`) would hit zsh's
+# README). Without this wrapper, a second `source` of this file in the same
+# shell (e.g. an ordinary `source ~/.zshrc`) would hit zsh's
 # `local`-outside-a-function fallback to plain `typeset`, which prints
 # `REPLY=<value>` to the terminal for an already-set variable instead of
 # scoping it.
@@ -155,14 +145,16 @@ if [ -n "$CLAUDE_CONFIG_DIR" ]; then
 fi
 
 # ------------------------------------------------------------------------
-# Discover environments by globbing $HOME/.claude-* directories. This is
-# the whole point of the plugin's extraction from a templated dotfiles
-# partial: no config var needs to be set for any of this to work.
+# Discover environments by globbing $HOME/.claude-* directories.
 # ------------------------------------------------------------------------
 typeset -ga _claude_env_names
 _claude_env_names=()
 local _claude_env_dir
 for _claude_env_dir in $HOME/.claude-*(N/); do
+  # Gate on .claude.json rather than the directory alone, to reject
+  # unrelated directories that merely match the naming convention (e.g. a
+  # ~/.claude-notes/ folder with no relation to Claude Code).
+  [ -f "$_claude_env_dir/.claude.json" ] || continue
   _claude_env_names+=("${${_claude_env_dir:t}#.claude-}")
 done
 
@@ -209,46 +201,12 @@ claude-env() {
   fi
   if (( ${_claude_env_names[(Ie)$1]} )); then
     export CLAUDE_CONFIG_DIR="$HOME/.claude-$1"
-    command -v p10k >/dev/null 2>&1 && p10k reload
+    # claude_env_after_switch, if defined, is called here — e.g. a p10k user
+    # can define it to call `p10k reload` so a prompt segment updates
+    # immediately (see README).
+    (( $+functions[claude_env_after_switch] )) && claude_env_after_switch
     return
   fi
   echo "Usage: claude-env [${(j:|:)_claude_env_names}]" >&2
   return 1
-}
-
-# ------------------------------------------------------------------------
-# Powerlevel10k segment (only meaningful if p10k is installed and this
-# plugin is registered in POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS as `claude_env`;
-# harmless no-op otherwise — p10k tolerates undefined segment functions).
-# ------------------------------------------------------------------------
-prompt_claude_env() {
-  local color REPLY
-  _claude_env_name
-  [ -n "$REPLY" ] || return
-  local label="$REPLY"
-
-  # Hide the segment while on the baseline env, when configured to do so —
-  # mirrors POWERLEVEL9K_NVM_SHOW_SYSTEM / the convention most p10k tool
-  # segments use of only surfacing state that differs from baseline.
-  if [ "$CLAUDE_ENV_SHOW_DEFAULT" != true ] \
-    && [ -n "$_claude_env_baseline_label" ] \
-    && [ "$label" = "$_claude_env_baseline_label" ]; then
-    return
-  fi
-
-  color="${CLAUDE_ENV_COLORS[$label]:-244}"
-  # nf-md-asterisk (U+F06C4), not the ✳ (U+2733) used in the window title:
-  # this renders in the terminal grid font, where U+2733 is missing from
-  # many installed faces, whereas PUA icons are guaranteed by nerdfont-v3.
-  # Passed via -i so placement follows POWERLEVEL9K_ICON_BEFORE_CONTENT
-  # like every other segment.
-  # p10k segment text is prompt-expansion-aware (that's how segments embed
-  # %F{color}...%f), so a literal % in the directory-derived label must be
-  # escaped to %% here — an unescaped % would otherwise be interpreted as
-  # a prompt escape sequence instead of literal text.
-  p10k segment -f $color -i '󰛄' -t "${label//\%/%%}"
-}
-
-instant_prompt_claude_env() {
-  prompt_claude_env
 }
