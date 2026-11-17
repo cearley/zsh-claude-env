@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-This repo is two independent pieces. `zsh-claude-env.plugin.zsh` is an **optional** oh-my-zsh plugin (one file, no build step, no package manager, no tests, no CI) providing only a terminal-title feature and two extension hook points for Claude Code (https://claude.ai/code). The other piece — profile discovery, registration, and switching across multiple `CLAUDE_CONFIG_DIR` directories — is owned entirely by the standalone `ccenv` CLI (`bin/ccenv`/`cenv`/`ccv`, `libexec/ccenv*`), which has zero dependency on this plugin or oh-my-zsh. This file documents only the plugin half; see README.md for `ccenv`.
+This repo is three pieces. `zsh-claude-env.plugin.zsh` is an **optional** oh-my-zsh plugin (one file, no build step, no package manager, no tests, no CI) providing only a terminal-title feature and two extension hook points for Claude Code (https://claude.ai/code). The second piece — profile discovery, registration, and switching across multiple `CLAUDE_CONFIG_DIR` directories — is owned entirely by the standalone `ccenv` CLI (`bin/ccenv`/`cenv`/`ccv`, `libexec/ccenv*`), which has zero dependency on this plugin or oh-my-zsh. The third piece, `mods/`, holds Claude Code mods (tool-hook-based, in-process) that treat `ccenv` as ground truth for profile state — e.g. a `tool.check` guard that reads `ccenv`'s own registry/resolution instead of regex-guessing a profile from `~/.claude-<name>` directory naming. The dependency runs one way only: `mods/` may depend on `ccenv`, but the plugin and `ccenv` stay independent of `mods/` and of each other. This file documents only the plugin half; see README.md for `ccenv`.
 
 ## Development workflow
 
