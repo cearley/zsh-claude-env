@@ -1,0 +1,5 @@
+{
+  "name": "ccenv-profile-guard",
+  "version": "0.1.0",
+  "description": "Asks before a tool call crosses ccenv-managed Claude Code profile boundaries"
+}
